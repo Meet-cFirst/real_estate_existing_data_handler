@@ -9,3 +9,4 @@ unsuccessful_ips_v1.txt
 successful_ips.txt
 successful_ips_v1.txt
 .env
+logs/

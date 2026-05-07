@@ -17,9 +17,9 @@ load_dotenv()
 # CONFIGURATION
 # ============================================================
 # SOURCE_DIR = "/home/caypro/Documents/supremePdfMapper/samepl/real_estate_"
-SOURCE_DIR = "/home/caypro/Documents/real_estate_existing_data_handler/1"
+SOURCE_DIR = "/data/scraping_data_doc"
 # DEST_PARENT_DIR = "/home/caypro/Documents/supremePdfMapper/samepl/restructured_data"
-DEST_PARENT_DIR = "/home/caypro/Documents/real_estate_existing_data_handler/restructure_data"
+DEST_PARENT_DIR = "/data/scraping_data_doc/restructure_data"
 BATCH_SIZE = 2000
 
 # constant english district value required by you

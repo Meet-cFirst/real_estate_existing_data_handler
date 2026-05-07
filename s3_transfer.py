@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import sys
 import time
 
 import traceback
@@ -116,6 +117,87 @@ class S3Transfer:
             logger.error(f"Failed to list S3 directory: {result.stderr}")
             return set()
 
+    def cache_s3_files_and_cleanup(self, s3_base_path, local_folder_path, cache_dir="/tmp/s3_cache"):
+        """
+        Cache S3 file listing and verify all local files match S3.
+        If all files match, delete the local folder.
+        
+        Args:
+            s3_base_path (str): S3 base path to list files from
+            local_folder_path (str): Local folder path to compare and potentially delete
+            cache_dir (str): Directory to store cache files
+            
+        Returns:
+            bool: True if folder was deleted, False otherwise
+        """
+        try:
+            # Create cache directory if it doesn't exist
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            # Generate cache filename based on s3 path
+            cache_filename = s3_base_path.replace("s3://", "").replace("/", "_") + ".txt"
+            cache_file_path = os.path.join(cache_dir, cache_filename)
+            
+            # Get all S3 files recursively in one command
+            logger.info(f"Fetching S3 file listing for {s3_base_path}")
+            result = subprocess.run(
+                ["s3cmd", "ls", "-r", s3_base_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to list S3 files: {result.stderr}")
+                logger.error("CRITICAL ERROR: Cannot verify S3 files. Exiting.")
+                sys.exit(1)
+            
+            # Save to cache file
+            with open(cache_file_path, 'w') as f:
+                f.write(result.stdout)
+            logger.info(f"Cached S3 file listing to {cache_file_path}")
+            
+            # Parse S3 files from cache
+            s3_files = set(re.findall(r'\s+(\S+)$', result.stdout, re.MULTILINE))
+            logger.info(f"Found {len(s3_files)} files in S3")
+            
+            # Get all local files
+            local_files = set()
+            for root, dirs, files in os.walk(local_folder_path):
+                for file in files:
+                    local_file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(local_file_path, local_folder_path)
+                    # Convert to S3 path format
+                    s3_equivalent_path = s3_base_path + relative_path.replace(os.sep, '/')
+                    local_files.add(s3_equivalent_path)
+            
+            logger.info(f"Found {len(local_files)} files in local folder")
+            
+            # Check if all local files exist in S3
+            missing_in_s3 = local_files - s3_files
+            
+            if missing_in_s3:
+                logger.error(f"CRITICAL: Not all local files are in S3. Missing {len(missing_in_s3)} files:")
+                for missing_file in list(missing_in_s3)[:10]:  # Log first 10
+                    logger.error(f"  - {missing_file}")
+                logger.error("CRITICAL ERROR: Files missing in S3. Cannot delete local folder. Exiting.")
+                sys.exit(1)
+            
+            # All files match - safe to delete local folder
+            logger.info(f"All {len(local_files)} local files verified in S3. Deleting local folder: {local_folder_path}")
+            
+            import shutil
+            shutil.rmtree(local_folder_path)
+            logger.info(f"Successfully deleted local folder: {local_folder_path}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"CRITICAL ERROR in cache_s3_files_and_cleanup: {e}")
+            logger.error(traceback.format_exc())
+            logger.error("Exiting due to critical error.")
+            sys.exit(1)
+
 
     @log_time
     def transfer_file_to_s3(self, local_file_path, s3_destination_path, max_retries=3):
@@ -204,7 +286,7 @@ class S3Transfer:
             
             logger.info(f"Retrieved metadata from DB for do_id {do_id}: district={district}, sro={sro}, year={year}")
 
-            s3_base_path = f"s3://calyso/marshaltestrealestate/{district}/{sro}/{year}/{do_id}/{folder_name}/"
+            s3_base_path = f"s3://calysosro/marshal/{district}/{sro}/{year}/{do_id}/{folder_name}/"
             logger.info(f"Starting S3 transfer for CNR {diary_no} to path: {s3_base_path}")
 
             if not os.path.exists(folder_path):
@@ -253,6 +335,14 @@ class S3Transfer:
             total_files = len(files_to_transfer)
             if successful_transfers == total_files and len(verification_failures) == 0:
                 logger.info(f"Successfully transferred and verified all {total_files} files for CNR {diary_no}")
+                
+                # Cache S3 files and cleanup local folder if all files match
+                cleanup_success = self.cache_s3_files_and_cleanup(s3_base_path, folder_path)
+                if cleanup_success:
+                    logger.info(f"Local folder deleted after successful S3 verification: {folder_path}")
+                else:
+                    logger.warning(f"Could not delete local folder (verification failed or error occurred): {folder_path}")
+                
                 return True, s3_base_path, s3_html_file_path
             else:
                 logger.error(f"Transfer incomplete for CNR {diary_no}: {successful_transfers}/{total_files} successful, {len(verification_failures)} verification failures")
@@ -269,8 +359,8 @@ class S3Transfer:
 
 @log_time
 def main():
-    SOURCE_DIR = "/home/caypro/Documents/supremePdfMapper/samepl/restructured_data"
-    BUCKET_NAME = "calyso"
+    SOURCE_DIR =  "/data/scraping_data_doc/restructure_data"
+    BUCKET_NAME = "calysosro"
     
     if not os.path.exists(SOURCE_DIR):
         logger.error(f"Source directory not found: {SOURCE_DIR}")
